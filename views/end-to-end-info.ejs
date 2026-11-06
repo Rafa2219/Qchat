@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="theme-color" content="#101827">
+	<title>How end-to-end encryption works</title>
+	<style>
+		:root {
+			color-scheme: dark;
+			--bg: #101827;
+			--panel: #172235;
+			--text: #edf3fc;
+			--muted: #aab8ca;
+			--accent: #70e1c1;
+			--line: #33445d;
+		}
+		* { box-sizing: border-box; }
+		body {
+			margin: 0;
+			background: var(--bg);
+			color: var(--text);
+			font: 16px/1.65 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+		}
+		main { width: 100%; min-height: 100vh; margin: 0; padding: clamp(24px, 5vw, 64px); }
+		.eyebrow { color: var(--accent); font-size: .78rem; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
+		h1 { max-width: 720px; margin: 12px 0 16px; font-size: clamp(2.2rem, 6vw, 4rem); line-height: 1.08; letter-spacing: -.045em; }
+		h2 { margin: 0 0 12px; font-size: 1.35rem; }
+		p { margin: 0 0 14px; color: var(--muted); }
+		.intro { max-width: 700px; font-size: 1.12rem; }
+		.card { margin-top: 30px; padding: clamp(20px, 4vw, 34px); border: 1px solid var(--line); border-radius: 20px; background: var(--panel); }
+		.diagram-wrap { margin-top: 24px; overflow-x: auto; }
+		svg { display: block; width: 100%; min-width: 620px; height: auto; }
+		.node { fill: #1d2b40; stroke: #425773; stroke-width: 1.5; }
+		.node-title { fill: var(--text); font: 700 16px system-ui, sans-serif; }
+		.node-copy { fill: #bdc9d8; font: 13px system-ui, sans-serif; }
+		.flow { fill: none; stroke: var(--accent); stroke-width: 3; marker-end: url(#arrow); }
+		.flow-dashed { fill: none; stroke: #8396ad; stroke-width: 2; stroke-dasharray: 6 6; marker-end: url(#arrow-muted); }
+		.flow-label { fill: #c5d3e2; font: 12px system-ui, sans-serif; }
+		.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 24px; }
+		.step { padding: 18px; border-radius: 14px; background: #111b2b; }
+		.step b { display: block; margin-bottom: 6px; color: var(--accent); }
+		.step p { margin: 0; font-size: .94rem; }
+		.note { margin-top: 20px; padding: 16px 18px; border-left: 3px solid var(--accent); border-radius: 0 10px 10px 0; background: #111b2b; }
+		.note strong { color: var(--text); }
+		@media (max-width: 680px) {
+			main { padding-top: 42px; }
+			.steps { grid-template-columns: 1fr; }
+			.card { border-radius: 15px; }
+		}
+		@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
+	</style>
+</head>
+<body>
+	<main>
+		<header>
+			<div class="eyebrow">How End-to-End encriptions works.</div>
+			<h1>Your messages are readable only at the ends.</h1>
+			<p class="intro">End-to-end encryption (E2EE) protects message contents while they travel between people. Your device encrypts a message, the server relays the encrypted data, and the recipient’s device decrypts it.</p>
+		</header>
+
+		<section class="card" aria-labelledby="journey-title">
+			<h2 id="journey-title">The journey of an encrypted message</h2>
+			<p>The server helps deliver messages, but it does not need the message key to relay them.</p>
+			<div class="diagram-wrap" role="img" aria-label="A sender's device encrypts a message. The server relays ciphertext without reading it. The recipient's device decrypts it. Replies follow the same route in reverse.">
+				<svg viewBox="0 0 820 280" aria-hidden="true" focusable="false">
+					<defs>
+						<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#70e1c1"/></marker>
+						<marker id="arrow-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8396ad"/></marker>
+					</defs>
+					<rect class="node" x="18" y="78" width="205" height="124" rx="16"/>
+					<text class="node-title" x="120" y="111" text-anchor="middle">Sender’s device</text>
+					<text class="node-copy" x="120" y="139" text-anchor="middle">Plaintext → encrypt</text>
+					<text class="node-copy" x="120" y="161" text-anchor="middle">Keys stay on devices*</text>
+
+					<rect class="node" x="307" y="78" width="205" height="124" rx="16"/>
+					<text class="node-title" x="409" y="111" text-anchor="middle">Service server</text>
+					<text class="node-copy" x="409" y="139" text-anchor="middle">Routes and queues</text>
+					<text class="node-copy" x="409" y="161" text-anchor="middle">ciphertext</text>
+
+					<rect class="node" x="597" y="78" width="205" height="124" rx="16"/>
+					<text class="node-title" x="699" y="111" text-anchor="middle">Recipient’s device</text>
+					<text class="node-copy" x="699" y="139" text-anchor="middle">Ciphertext → decrypt</text>
+					<text class="node-copy" x="699" y="161" text-anchor="middle">Readable message</text>
+
+					<path class="flow" d="M 224 112 C 252 92, 274 92, 302 112"/>
+					<text class="flow-label" x="264" y="79" text-anchor="middle">encrypt</text>
+					<path class="flow" d="M 513 112 C 541 92, 563 92, 592 112"/>
+					<text class="flow-label" x="553" y="79" text-anchor="middle">ciphertext</text>
+					<path class="flow-dashed" d="M 597 173 C 568 222, 254 222, 223 173"/>
+					<text class="flow-label" x="410" y="246" text-anchor="middle">Replies use the same protected route in reverse</text>
+				</svg>
+			</div>
+			<div class="steps">
+				<div class="step"><b>1. Encrypt</b><p>Your app uses cryptographic keys to turn the message into ciphertext before sending it.</p></div>
+				<div class="step"><b>2. Relay</b><p>The server delivers or temporarily queues ciphertext. It may still handle delivery details.</p></div>
+				<div class="step"><b>3. Decrypt</b><p>The recipient’s app uses its keys to recover the message on their device.</p></div>
+			</div>
+		</section>
+
+		<section class="card" aria-labelledby="limits-title">
+			<h2 id="limits-title">What E2EE does—and doesn’t—protect</h2>
+			<p>E2EE is designed to prevent the service and network observers from reading message contents in transit or from server-stored ciphertext. The exact protections depend on how the app implements encryption and manages keys.</p>
+			<div class="note"><strong>Important:</strong> Encryption cannot protect a message after it is visible on an unlocked or compromised device. People in a conversation can also save or share what they receive. Depending on the service, metadata such as who contacted whom, when, and delivery status may remain visible. Verify safety numbers or device identities when available, and keep devices and apps up to date.</div>
+			<p style="margin-top:16px;font-size:.88rem">* In a typical E2EE design, private keys are held by user devices; some systems also use encrypted backups or multiple linked devices. Check the service’s security documentation for its specific design.</p>
+		</section>
+	</main>
+</body>
+</html>

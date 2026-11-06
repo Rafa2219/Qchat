@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#075e54">
+    <title>Qchat Web</title>
+    <link rel="stylesheet" href="/public/static/css/main_style.css">
+    <style>
+        /* + estilos */
+    </style>
+</head>
+
+<body>
+    <main class="app" id="app">
+        <aside class="sidebar" aria-label="Chats">
+            <header class="topbar">
+                <div class="brand"><span class="brand-icon" aria-hidden="true">◉</span><span>Qchat</span></div>
+                <div class="topbar-tools">
+                    <div class="connection" aria-live="polite"><span class="dot" id="statusDot"></span><span
+                            id="statusText">Connecting…</span></div><button class="settings-button" id="settingsButton"
+                        type="button" aria-label="Abrir ajustes">⚙ Ajustes</button>
+                </div>
+            </header>
+            <div class="profile">
+                <div class="profile-row"><input class="username" id="username" type="text"
+                        placeholder="Choose a username so others can contact you" aria-label="Your username"
+                        maxlength="30" autocomplete="username"><button class="username-confirm" id="usernameConfirm"
+                        type="button" aria-label="Confirm username" title="Confirm username" hidden>✓</button></div>
+                <div class="username-status" id="usernameStatus" aria-live="polite"></div>
+                <div>Note: username isn't yours and can be used by anyone connected. you can only use it as yours when
+                    you're online</div>
+            </div>
+            <div class="search-wrap"><input class="search" id="search" type="search"
+                    placeholder="Search or start a new chat" aria-label="Search chats">
+                <div class="online-summary" id="onlineSummary" aria-live="polite">No users online</div>
+            </div>
+            <div class="contacts" id="contacts"></div>
+        </aside>
+        <section class="chat" aria-label="Conversation">
+            <header class="chat-head"><button class="mobile-back" id="backButton" aria-label="Back to chats">‹</button>
+                <div class="avatar" id="activeAvatar">?</div>
+                <div>
+                    <div class="chat-title" id="activeName">Select a chat</div>
+                    <div class="chat-subtitle" id="activeSubtitle">Messages are sent over a secure connection</div>
+                </div>
+                <div class="chat-menu-wrap"><button class="chat-menu-button" id="chatMenuButton" type="button"
+                        aria-label="Chat options" aria-haspopup="true" aria-expanded="false">⋮</button>
+                    <div class="chat-menu" id="chatMenu" hidden><button type="button" id="appearanceMenuItem">Chat
+                            appearance</button><button type="button" id="clearChatMenuItem">Clear chat</button><button
+                            type="button" id="deleteChatMenuItem">Delete chat</button></div>
+                </div>
+            </header>
+            <div class="chat-body" id="messages" aria-live="polite">
+                <div class="welcome">
+                    <div class="welcome-icon" aria-hidden="true"><svg width="32" height="32" viewBox="0 -4 24 24"
+                            id="meteor-icon-kit__solid-checkmark" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M8 9V6a4 4 0 0 1 8 0v3" stroke="#808080" stroke-width="1.8"
+                                stroke-linecap="round" />
+                            <rect x="5" y="9" width="14" height="10" rx="2" fill="#808080" />
+                            <circle cx="12" cy="13" r="1.2" fill="#ffffff" />
+                            <path d="M12 14.2V16" stroke="#ffffff" stroke-width="1.2" stroke-linecap="round" />
+                        </svg></div>
+                    <h1>Keep connected</h1>
+                    <p>Select a chat to view messages. This is a secure web interface, and your messages are
+                        <strong>end-to-end encrypted</strong>. Learn more about how it works <a
+                            href="/end-to-end">here</a>.</p>
+                </div>
+            </div>
+            <form class="composer" id="composer"><textarea id="messageInput" rows="1" maxlength="4096"
+                    placeholder="Type a message" aria-label="Message (maximum 2048 bytes)" disabled></textarea><output
+                    class="character-counter" id="messageCounter" aria-live="polite" hidden></output><button
+                    class="send" id="sendButton" type="submit" aria-label="Send message" disabled>➤</button></form>
+        </section>
+    </main>
+    <dialog class="popup" id="appPopup" aria-labelledby="popupTitle" aria-describedby="popupMessage">
+        <h2 id="popupTitle">Notice</h2>
+        <p id="popupMessage"></p>
+        <div class="popup-actions"><button class="secondary" id="popupContinue" type="button" hidden>Continue to
+                chat</button><button id="popupClose" type="button">Got it</button></div>
+    </dialog>
+    <section class="settings-screen" id="settingsScreen" aria-label="General settings" aria-hidden="true">
+        <header class="settings-screen-head"><button class="settings-back" id="settingsBack" type="button"
+                aria-label="Back to chats">‹</button>
+            <h1>Settings</h1>
+        </header>
+        <div class="settings-layout">
+            <nav class="settings-nav" aria-label="Settings categories"><button type="button"
+                    data-settings-category="appearance" aria-current="page">Appearance</button><button type="button"
+                    data-settings-category="profile">Profile</button><button type="button"
+                    data-settings-category="accessibility">Accessibility</button></nav>
+            <div class="settings-content">
+                <section data-settings-panel="appearance">
+                    <h2>Appearance</h2>
+                    <div class="settings-section"><label for="themeSelect">Theme</label><select id="themeSelect">
+                            <option value="system">System</option>
+                            <option value="light">Light</option>
+                            <option value="dark">Dark</option>
+                        </select></div>
+                    <div class="settings-section"><label for="generalBackgroundMode">General chat
+                            background</label><select id="generalBackgroundMode">
+                            <option value="system">System (dark/light)</option>
+                            <option value="custom">Custom color</option>
+                        </select><input id="solidBackgroundColor" type="color" value="#efeae2"></div>
+                    <div class="settings-section"><label for="interfacePalette">Interface color palette</label><select
+                            id="interfacePalette">
+                            <option value="#00a884">WhatsApp green</option>
+                            <option value="#2563eb">Blue</option>
+                            <option value="#7c3aed">Violet</option>
+                            <option value="#db2777">Pink</option>
+                            <option value="#ea580c">Orange</option>
+                            <option value="#0891b2">Cyan</option>
+                        </select></div>
+                    <div class="settings-section"><label for="fontSelect">Choose your font</label><select
+                            id="fontSelect">
+                            <option value="system">System</option>
+                            <option value="arial">Arial</option>
+                            <option value="georgia">Georgia</option>
+                            <option value="verdana">Verdana</option>
+                        </select></div>
+                </section>
+                <section data-settings-panel="profile" hidden>
+                    <h2>Profile</h2>
+                    <div class="settings-profile-slot" id="settingsProfileSlot"></div>
+                </section>
+                <section data-settings-panel="accessibility" hidden>
+                    <h2>Accessibility</h2>
+                    <div class="settings-section"><label class="settings-toggle" for="enterToSend"><span>Enter to
+                                send</span><input id="enterToSend" type="checkbox"></label></div>
+                    <div class="settings-section"><label class="settings-toggle" for="autoFocus"><span>Auto focus on
+                                desktop</span><input id="autoFocus" type="checkbox"></label></div>
+                </section>
+            </div>
+        </div>
+    </section>
+    <dialog class="popup appearance-dialog" id="appearanceDialog" aria-labelledby="appearanceTitle">
+        <h2 id="appearanceTitle">Chat appearance</h2>
+        <div class="settings-section"><label for="chatBackgroundFile">Chat background image</label><input
+                id="chatBackgroundFile" type="file" accept="image/*"></div>
+        <p class="appearance-hint">Images are stored on this device for this chat.</p>
+        <div class="settings-section"><label for="backgroundFit">Image crop</label><select id="backgroundFit">
+                <option value="auto">Auto crop (fill)</option>
+                <option value="custom">Custom crop</option>
+            </select></div>
+        <div class="settings-section"><label for="backgroundRepeat">Image render mode</label><select
+                id="backgroundRepeat">
+                <option value="repeat">Repeat</option>
+                <option value="once">Only one</option>
+            </select></div>
+        <div id="customCropControls" hidden>
+            <div class="settings-section"><label for="cropX">Horizontal position</label><input id="cropX" type="range"
+                    min="0" max="100" value="50"></div>
+            <div class="settings-section"><label for="cropY">Vertical position</label><input id="cropY" type="range"
+                    min="0" max="100" value="50"></div>
+        </div>
+        <div class="settings-section"><label for="backgroundZoom">Background zoom</label><input id="backgroundZoom"
+                type="range" min="100" max="300" value="100"><span id="backgroundZoomValue"
+                class="appearance-hint">100%</span></div>
+        <div class="settings-section"><label for="receivedBubbleColor">Received message bubble color</label><input
+                id="receivedBubbleColor" type="color" value="#fff4d6"></div>
+        <div class="settings-section"><label for="sentBubbleColor">Sent message bubble color</label><input
+                id="sentBubbleColor" type="color" value="#d9eaff"></div>
+        <div class="settings-section"><label for="messageFontColor">Message font color</label><input
+                id="messageFontColor" type="color" value="#111b21"></div>
+        <div class="popup-actions"><button class="secondary" id="clearAppearance" type="button">Reset</button><button
+                class="secondary" id="appearanceClose" type="button">Done</button></div>
+    </dialog>
+    <script src="/public/static/javascript/client.js"></script>
+</html>
