@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#075e54">
     <title>Qchat Web</title>
-    <link rel="stylesheet" href="/public/static/css/main_style.css">
+    <link rel="stylesheet" href="/static/css/main_style.css">
     <style>
         /* + estilos */
     </style>
@@ -48,8 +48,9 @@
                 <div class="chat-menu-wrap"><button class="chat-menu-button" id="chatMenuButton" type="button"
                         aria-label="Chat options" aria-haspopup="true" aria-expanded="false">⋮</button>
                     <div class="chat-menu" id="chatMenu" hidden><button type="button" id="appearanceMenuItem">Chat
-                            appearance</button><button type="button" id="clearChatMenuItem">Clear chat</button><button
-                            type="button" id="deleteChatMenuItem">Delete chat</button></div>
+                            appearance</button><button type="button" id="blockChatMenuItem">Block chat</button><button
+                            type="button" id="clearChatMenuItem">Clear chat</button><button type="button"
+                            id="deleteChatMenuItem">Delete chat</button></div>
                 </div>
             </header>
             <div class="chat-body" id="messages" aria-live="polite">
@@ -65,7 +66,8 @@
                     <h1>Keep connected</h1>
                     <p>Select a chat to view messages. This is a secure web interface, and your messages are
                         <strong>end-to-end encrypted</strong>. Learn more about how it works <a
-                            href="/end-to-end">here</a>.</p>
+                            href="/end-to-end">here</a>.
+                    </p>
                 </div>
             </div>
             <form class="composer" id="composer"><textarea id="messageInput" rows="1" maxlength="4096"
@@ -82,7 +84,7 @@
     </dialog>
     <section class="settings-screen" id="settingsScreen" aria-label="General settings" aria-hidden="true">
         <header class="settings-screen-head"><button class="settings-back" id="settingsBack" type="button"
-                aria-label="Back to chats">‹</button>
+                aria-label="Back to chats">&leftarrow;</button>
             <h1>Settings</h1>
         </header>
         <div class="settings-layout">
@@ -123,6 +125,18 @@
                 <section data-settings-panel="profile" hidden>
                     <h2>Profile</h2>
                     <div class="settings-profile-slot" id="settingsProfileSlot"></div>
+                    <div class="settings-section"><label for="profileDisplayName">Display name</label><input
+                            id="profileDisplayName" type="text" maxlength="50" autocomplete="nickname"></div>
+                    <div class="settings-section"><label for="profileBio">Bio</label><textarea id="profileBio"
+                            maxlength="160" rows="3"></textarea></div>
+                    <div class="settings-section"><label for="profileAvatar">Avatar URL</label><input
+                            id="profileAvatar" type="url" maxlength="2048" placeholder="https://…"
+                            autocomplete="url"></div>
+                    <div class="settings-section"><label for="profilePassword">Password (for future use)</label><input
+                            id="profilePassword" type="password" minlength="12" maxlength="128"
+                            autocomplete="new-password"><small>This is stored as a scrypt hash and is not used to sign in.</small></div>
+                    <div class="settings-section"><button id="saveProfileButton" type="button">Save profile</button>
+                        <button class="delete-account-button" id="deleteAccountButton" type="button">Delete account</button></div>
                 </section>
                 <section data-settings-panel="accessibility" hidden>
                     <h2>Accessibility</h2>
@@ -166,5 +180,6 @@
         <div class="popup-actions"><button class="secondary" id="clearAppearance" type="button">Reset</button><button
                 class="secondary" id="appearanceClose" type="button">Done</button></div>
     </dialog>
-    <script src="/public/static/javascript/client.js"></script>
+    <script src="/static/javascript/client.js"></script>
+
 </html>

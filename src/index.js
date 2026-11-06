@@ -1,8 +1,16 @@
 "use strict";
+/**
+ * Este proyecto fue creado por Rafa2219 &copy; 2026. Todos los derechos reservados.
+ * Proyecto de código abierto bajo la licencia MIT. Para más información, consulte el archivo LICENSE.
+ * 
+ * Este servidor de mensajería utiliza WebSockets para la comunicación en tiempo real.
+ */
 const WebSocket = require("ws");
 const { Server } = WebSocket;
 const crypto = require("node:crypto");
 const console = require("node:console");
+const { MongoClient } = require("mongodb");
+const { promisify } = require("node:util");
 require("dotenv").config();
 
 const PORT = process.env.MSG_PORT || 3736;
@@ -11,6 +19,34 @@ const MAX_MESSAGE_LENGTH = Number.isSafeInteger(configuredMaxMessageLength) && c
     ? configuredMaxMessageLength
     : 2048;
 const io = new Server({ port: PORT });
+const mongoClient = process.env.MONGODB_URI ? new MongoClient(process.env.MONGODB_URI) : null;
+let blockedUsersCollection = null;
+let deletedUsersCollection = null;
+const profilesByUsername = new Map();
+const deletedUsernames = new Set();
+const deletingUsernames = new Set();
+const scrypt = promisify(crypto.scrypt);
+
+const mongoReady = mongoClient
+    ? mongoClient.connect()
+        .then(async () => {
+            const db = mongoClient.db(process.env.MONGODB_DB || "qchat");
+            blockedUsersCollection = db.collection("users");
+            deletedUsersCollection = db.collection("deletedUsers");
+            const [profiles, deleted] = await Promise.all([
+                blockedUsersCollection.find({}).toArray(),
+                deletedUsersCollection.find({}, { projection: { _id: 1 } }).toArray()
+            ]);
+            for (const profile of profiles) profilesByUsername.set(String(profile._id).toLowerCase(), profile);
+            for (const user of deleted) deletedUsernames.add(String(user._id).toLowerCase());
+            console.log(`MongoDB connected; loaded ${profiles.length} accounts and ${deleted.length} deleted usernames.`);
+            return true;
+        })
+        .catch((error) => {
+            console.error("MongoDB connection or account loading failed:", error);
+            return false;
+        })
+    : Promise.resolve(false);
 
 io.on("listening", () => {
     console.log("server listening at: ws://localhost:" + PORT);
@@ -28,7 +64,7 @@ const contacts = new Map(); // socketId : Set<socketId>
 function sendError(socket, message) {
     try { socket.send(JSON.stringify({ type: "error", from: "server", error: message })); } catch { }
 }
-
+const debug = process.env.DEBUG === "true" ? console.log : () => { };
 function normalizeUsername(u) {
     if (typeof u !== "string") return null;
     const t = u.trim().replace(/^@/, "");
@@ -40,6 +76,15 @@ function normalizeUsername(u) {
 function findSocketIdByUsername(username) {
     if (typeof username !== "string") return null;
     return usernameIndex.get(username.toLowerCase())?.socketId || null;
+}
+
+function sendUserDeleted(socket, username, id) {
+    socket.send(JSON.stringify({
+        type: "user.deleted",
+        from: "server",
+        username,
+        id
+    }));
 }
 
 function getOnlineUsernames(excludeSocketId) {
@@ -83,8 +128,248 @@ function flushOfflineQueue(socketId, username) {
     offlineQueue.delete(lower);
 }
 
+async function updateContactList(socket, username, meta) {
+    const target = normalizeUsername(meta.username);
+    if (!target) {
+        return socket.send(JSON.stringify({
+            type: "contact.list.update.result",
+            from: "server",
+            data: { success: false, error: "Nombre de usuario inválido." }
+        }));
+    }
+    if (target.toLowerCase() === username.toLowerCase()) {
+        return socket.send(JSON.stringify({
+            type: "contact.list.update.result",
+            from: "server",
+            data: { success: false, error: "No puedes bloquearte a ti mismo." }
+        }));
+    }
+    if (meta.action !== "block") {
+        return socket.send(JSON.stringify({
+            type: "contact.list.update.result",
+            from: "server",
+            data: { success: false, error: "Acción de lista no válida." }
+        }));
+    }
+    if (!mongoClient || !blockedUsersCollection) {
+        return socket.send(JSON.stringify({
+            type: "contact.list.update.result",
+            from: "server",
+            data: { success: false, error: "El bloqueo de chats no está disponible." }
+        }));
+    }
+
+    try {
+        await blockedUsersCollection.updateOne(
+            { _id: username.toLowerCase() },
+            {
+                $setOnInsert: { username },
+                $addToSet: { blockedUsers: target.toLowerCase() }
+            },
+            { upsert: true }
+        );
+        const queued = offlineQueue.get(username.toLowerCase());
+        if (queued) {
+            const remaining = queued.filter((envelope) => envelope.from.toLowerCase() !== target.toLowerCase());
+            if (remaining.length) offlineQueue.set(username.toLowerCase(), remaining);
+            else offlineQueue.delete(username.toLowerCase());
+        }
+        return socket.send(JSON.stringify({
+            type: "contact.list.update.result",
+            from: "server",
+            data: { success: true, action: "block", username: target }
+        }));
+    } catch (error) {
+        console.error("Failed to save blocked chat:", error);
+        return socket.send(JSON.stringify({
+            type: "contact.list.update.result",
+            from: "server",
+            data: { success: false, error: "No se pudo guardar el bloqueo." }
+        }));
+    }
+}
+
+function getPublicProfile(profile) {
+    return profile?.profile && typeof profile.profile === "object"
+        ? profile.profile
+        : { displayName: "", bio: "", avatar: "" };
+}
+
+async function updateProfile(socket, username, meta) {
+    if (!mongoClient || !await mongoReady || !blockedUsersCollection) {
+        return socket.send(JSON.stringify({
+            type: "update.profile.result",
+            data: { success: false, error: "Profile storage is unavailable." }
+        }));
+    }
+
+    const profile = meta.profile;
+    if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
+        return socket.send(JSON.stringify({
+            type: "update.profile.result",
+            data: { success: false, error: "Invalid profile." }
+        }));
+    }
+
+    const updatedProfile = { ...getPublicProfile(profilesByUsername.get(username.toLowerCase())) };
+    if (Object.hasOwn(profile, "displayName")) {
+        if (typeof profile.displayName !== "string" || profile.displayName.length > 50) {
+            return socket.send(JSON.stringify({
+                type: "update.profile.result",
+                data: { success: false, error: "Display name must be 50 characters or fewer." }
+            }));
+        }
+        updatedProfile.displayName = profile.displayName.trim();
+    }
+    if (Object.hasOwn(profile, "bio")) {
+        if (typeof profile.bio !== "string" || profile.bio.length > 160) {
+            return socket.send(JSON.stringify({
+                type: "update.profile.result",
+                data: { success: false, error: "Bio must be 160 characters or fewer." }
+            }));
+        }
+        updatedProfile.bio = profile.bio.trim();
+    }
+    if (Object.hasOwn(profile, "avatar")) {
+        if (typeof profile.avatar !== "string" || profile.avatar.length > 2048) {
+            return socket.send(JSON.stringify({
+                type: "update.profile.result",
+                data: { success: false, error: "Avatar URL must be 2048 characters or fewer." }
+            }));
+        }
+        if (profile.avatar) {
+            let avatarUrl;
+            try { avatarUrl = new URL(profile.avatar); }
+            catch {
+                return socket.send(JSON.stringify({
+                    type: "update.profile.result",
+                    data: { success: false, error: "Avatar must be a valid HTTP(S) URL." }
+                }));
+            }
+            if (!["http:", "https:"].includes(avatarUrl.protocol)) {
+                return socket.send(JSON.stringify({
+                    type: "update.profile.result",
+                    data: { success: false, error: "Avatar must be a valid HTTP(S) URL." }
+                }));
+            }
+        }
+        updatedProfile.avatar = profile.avatar.trim();
+    }
+
+    const fields = { profile: updatedProfile };
+    if (typeof meta.password === "string" && meta.password) {
+        if (meta.password.length < 12 || meta.password.length > 128) {
+            return socket.send(JSON.stringify({
+                type: "update.profile.result",
+                data: { success: false, error: "Password must be 12-128 characters." }
+            }));
+        }
+        const salt = crypto.randomBytes(16);
+        const hash = await scrypt(meta.password, salt, 64);
+        fields.passwordCredential = {
+            algorithm: "scrypt",
+            salt: salt.toString("base64"),
+            hash: hash.toString("base64")
+        };
+    }
+
+    try {
+        await blockedUsersCollection.updateOne(
+            { _id: username.toLowerCase() },
+            { $set: fields }
+        );
+        const stored = profilesByUsername.get(username.toLowerCase()) || { _id: username.toLowerCase(), username };
+        stored.profile = updatedProfile;
+        if (fields.passwordCredential) stored.passwordCredential = fields.passwordCredential;
+        profilesByUsername.set(username.toLowerCase(), stored);
+        return socket.send(JSON.stringify({
+            type: "update.profile.result",
+            data: { success: true, profile: updatedProfile }
+        }));
+    } catch (error) {
+        console.error("Failed to update profile:", error);
+        return socket.send(JSON.stringify({
+            type: "update.profile.result",
+            data: { success: false, error: "Could not save profile." }
+        }));
+    }
+}
+
+async function deleteAccount(socket, username) {
+    if (!mongoClient || !await mongoReady || !blockedUsersCollection || !deletedUsersCollection) {
+        return socket.send(JSON.stringify({
+            type: "account.delete.result",
+            data: { success: false, error: "Account storage is unavailable." }
+        }));
+    }
+
+    const lower = username.toLowerCase();
+    deletingUsernames.add(lower);
+    try {
+        await deletedUsersCollection.updateOne(
+            { _id: lower },
+            { $set: { username } },
+            { upsert: true }
+        );
+        await blockedUsersCollection.deleteOne({ _id: lower });
+        await blockedUsersCollection.updateMany(
+            { blockedUsers: lower },
+            { $pull: { blockedUsers: lower } }
+        );
+    } catch (error) {
+        deletingUsernames.delete(lower);
+        console.error("Failed to delete account from MongoDB:", error);
+        return socket.send(JSON.stringify({
+            type: "account.delete.result",
+            data: { success: false, error: "Could not delete the account." }
+        }));
+    }
+
+    deletedUsernames.add(lower);
+    deletingUsernames.delete(lower);
+    profilesByUsername.delete(lower);
+    offlineQueue.delete(lower);
+    for (const [recipient, queue] of offlineQueue) {
+        const remaining = queue.filter((envelope) => envelope.from.toLowerCase() !== lower);
+        if (remaining.length) offlineQueue.set(recipient, remaining);
+        else offlineQueue.delete(recipient);
+    }
+
+    const socketsToClose = [];
+    for (const [id, pending] of pendingVerifications) {
+        if (pending.username.toLowerCase() !== lower) continue;
+        const session = sessions.get(id);
+        if (session) socketsToClose.push(session.socket);
+        pendingVerifications.delete(id);
+    }
+    for (const [id, user] of users) {
+        if (user.username.toLowerCase() !== lower) continue;
+        const session = sessions.get(id);
+        if (session) socketsToClose.push(session.socket);
+        users.delete(id);
+        contacts.delete(id);
+        pendingVerifications.delete(id);
+        for (const contactSet of contacts.values()) contactSet.delete(id);
+    }
+    usernameIndex.delete(lower);
+    const response = {
+        type: "account.delete.result",
+        data: { success: true }
+    };
+    socket.send(JSON.stringify(response), () => {
+        for (const socketToClose of socketsToClose) {
+            try { socketToClose.close(1000, "Account deleted"); }
+            catch (error) { console.error("Could not close deleted account session:", error); }
+        }
+        sendOnlineUsers();
+    });
+}
+
 //  registro (auth) 
-function handleRegister(socket, socketId, meta) {
+async function handleRegister(socket, socketId, meta) {
+    if (mongoClient && !await mongoReady) {
+        return socket.send(JSON.stringify({ type: "register.error", error: "Account storage is unavailable." }));
+    }
     const username = normalizeUsername(meta.username);
     if (!username) return sendError(socket, "Username inválido (2-30 chars: a-z 0-9 _ . -).");
     if (typeof meta.encPublicKey !== "string" || typeof meta.sigPublicKey !== "string")
@@ -92,6 +377,7 @@ function handleRegister(socket, socketId, meta) {
 
     const lower = username.toLowerCase();
     const existing = usernameIndex.get(lower);
+    const savedAccount = profilesByUsername.get(lower);
 
     if (existing) {
         if (existing.encPublicKey !== meta.encPublicKey || existing.sigPublicKey !== meta.sigPublicKey) {
@@ -100,6 +386,14 @@ function handleRegister(socket, socketId, meta) {
                 error: "Ese username ya está registrado con otras llaves."
             }));
         }
+    }
+    if (savedAccount && !deletedUsernames.has(lower) &&
+        ((savedAccount.encPublicKey && savedAccount.encPublicKey !== meta.encPublicKey) ||
+            (savedAccount.sigPublicKey && savedAccount.sigPublicKey !== meta.sigPublicKey))) {
+        return socket.send(JSON.stringify({
+            type: "register.error",
+            error: "Ese username ya está registrado con otras llaves."
+        }));
     }
 
     const challenge = crypto.randomBytes(32).toString("base64");
@@ -112,7 +406,7 @@ function handleRegister(socket, socketId, meta) {
     socket.send(JSON.stringify({ type: "register.challenge", challenge }));
 }
 
-function handleVerify(socket, socketId, meta) {
+async function handleVerify(socket, socketId, meta) {
     const pending = pendingVerifications.get(socketId);
     if (!pending) return sendError(socket, "No hay un registro pendiente.");
     if (typeof meta.signature !== "string") return sendError(socket, "Falta la firma.");
@@ -133,6 +427,63 @@ function handleVerify(socket, socketId, meta) {
 
     const lower = pending.username.toLowerCase();
     const previous = usernameIndex.get(lower);
+    let blockedUsers;
+    const savedAccount = profilesByUsername.get(lower);
+    if (savedAccount && !deletedUsernames.has(lower) &&
+        ((savedAccount.encPublicKey && savedAccount.encPublicKey !== pending.encPublicKey) ||
+            (savedAccount.sigPublicKey && savedAccount.sigPublicKey !== pending.sigPublicKey))) {
+        pendingVerifications.delete(socketId);
+        return socket.send(JSON.stringify({
+            type: "register.error",
+            error: "Ese username ya está registrado con otras llaves."
+        }));
+    }
+    if (mongoClient && await mongoReady && blockedUsersCollection) {
+        try {
+            const wasDeleted = deletedUsernames.has(lower);
+            if (wasDeleted) await blockedUsersCollection.deleteOne({ _id: lower });
+            await blockedUsersCollection.updateOne(
+                { _id: lower },
+                {
+                    $setOnInsert: {
+                        username: pending.username,
+                        blockedUsers: [],
+                        profile: { displayName: "", bio: "", avatar: "" },
+                        encPublicKey: pending.encPublicKey,
+                        sigPublicKey: pending.sigPublicKey
+                    }
+                },
+                { upsert: true }
+            );
+            await blockedUsersCollection.updateOne(
+                { _id: lower, encPublicKey: { $exists: false } },
+                { $set: { encPublicKey: pending.encPublicKey, sigPublicKey: pending.sigPublicKey } }
+            );
+            const user = await blockedUsersCollection.findOne({ _id: lower });
+            if ((user?.encPublicKey && user.encPublicKey !== pending.encPublicKey) ||
+                (user?.sigPublicKey && user.sigPublicKey !== pending.sigPublicKey)) {
+                pendingVerifications.delete(socketId);
+                return socket.send(JSON.stringify({
+                    type: "register.error",
+                    error: "Ese username ya está registrado con otras llaves."
+                }));
+            }
+            if (wasDeleted) {
+                await deletedUsersCollection.deleteOne({ _id: lower });
+                deletedUsernames.delete(lower);
+                deletingUsernames.delete(lower);
+            }
+            profilesByUsername.set(lower, user);
+            blockedUsers = Array.isArray(user?.blockedUsers) ? user.blockedUsers : [];
+        } catch (error) {
+            console.error("Failed to load account data:", error);
+            pendingVerifications.delete(socketId);
+            return socket.send(JSON.stringify({ type: "register.error", error: "Could not load account data." }));
+        }
+    } else if (mongoClient) {
+        pendingVerifications.delete(socketId);
+        return socket.send(JSON.stringify({ type: "register.error", error: "Account storage is unavailable." }));
+    }
 
     users.set(socketId, {
         username: pending.username,
@@ -155,7 +506,9 @@ function handleVerify(socket, socketId, meta) {
 
     socket.send(JSON.stringify({
         type: "register.ok",
-        username: pending.username
+        username: pending.username,
+        blockedUsers,
+        profile: getPublicProfile(profilesByUsername.get(lower))
     }), () => {
         sendOnlineUsers();
         flushOfflineQueue(socketId, pending.username);
@@ -174,7 +527,7 @@ io.on("connection", (socket) => {
         message: "your id is: " + socket_id
     }));
 
-    socket.on("message", (data) => {
+    socket.on("message", async (data) => {
         const messageLength = Buffer.isBuffer(data)
             ? data.length
             : Array.isArray(data)
@@ -186,13 +539,26 @@ io.on("connection", (socket) => {
         }
 
         let meta;
-        try { meta = JSON.parse(data.toString("utf-8")); }
+        try {
+            meta = JSON.parse(data.toString("utf-8"));
+            debug("Request received:", { type: meta?.type });
+        }
         catch { return sendError(socket, "JSON inválido."); }
         if (!meta || typeof meta !== "object") return sendError(socket, "Payload inválido.");
 
         // --- endpoints sin auth ---
-        if (meta.type === "register.presence") return handleRegister(socket, socket_id, meta);
-        if (meta.type === "register.verify") return handleVerify(socket, socket_id, meta);
+        if (meta.type === "register.presence") {
+            return handleRegister(socket, socket_id, meta).catch((error) => {
+                console.error("Registration failed:", error);
+                socket.send(JSON.stringify({ type: "register.error", error: "Could not complete registration." }));
+            });
+        }
+        if (meta.type === "register.verify") {
+            return handleVerify(socket, socket_id, meta).catch((error) => {
+                console.error("Registration verification failed:", error);
+                sendError(socket, "No se pudo completar el registro.");
+            });
+        }
 
         // --- todo lo demás requiere estar registrado ---
         const me = users.get(socket_id);
@@ -207,25 +573,41 @@ io.on("connection", (socket) => {
         }
 
         if (meta.type === "user.lookup") {
-            const target = findSocketIdByUsername(meta.username);
-            if (!target) return socket.send(JSON.stringify({
+            const username = normalizeUsername(meta.username);
+            const lower = username?.toLowerCase();
+            if (!username) return socket.send(JSON.stringify({
                 type: "user.lookup.result",
                 from: "server",
                 data: { success: false, error: "Usuario no encontrado." }
             }));
-            const u = users.get(target);
+            if (deletedUsernames.has(lower) || deletingUsernames.has(lower)) return sendUserDeleted(socket, username);
+            const target = findSocketIdByUsername(username);
+            const u = target ? users.get(target) : profilesByUsername.get(lower);
+            if (!u) return socket.send(JSON.stringify({
+                type: "user.lookup.result",
+                from: "server",
+                data: { success: false, error: "Usuario no encontrado." }
+            }));
             return socket.send(JSON.stringify({
                 type: "user.lookup.result",
                 from: "server",
                 data: {
                     success: true,
-                    user: { username: u.username, publicKey: u.encPublicKey, sigPublicKey: u.sigPublicKey }
+                    user: {
+                        username: u.username,
+                        publicKey: u.encPublicKey,
+                        sigPublicKey: u.sigPublicKey,
+                        profile: getPublicProfile(profilesByUsername.get(lower))
+                    }
                 }
             }));
         }
 
         if (meta.type === "contact.add") {
-            const target = findSocketIdByUsername(meta.username);
+            const username = normalizeUsername(meta.username);
+            if (username && (deletedUsernames.has(username.toLowerCase()) ||
+                deletingUsernames.has(username.toLowerCase()))) return sendUserDeleted(socket, username);
+            const target = findSocketIdByUsername(username);
             if (!target) return socket.send(JSON.stringify({
                 type: "contact.add.result",
                 from: "server",
@@ -240,13 +622,30 @@ io.on("connection", (socket) => {
                 from: "server",
                 data: {
                     success: true,
-                    user: { username: u.username, publicKey: u.encPublicKey, sigPublicKey: u.sigPublicKey }
+                    user: {
+                        username: u.username,
+                        publicKey: u.encPublicKey,
+                        sigPublicKey: u.sigPublicKey,
+                        profile: getPublicProfile(profilesByUsername.get(u.username.toLowerCase()))
+                    }
                 }
             }));
         }
+        
+        if (meta.type === "contact.list.update") return updateContactList(socket, me.username, meta);
+        if (meta.type === "update.profile") {
+            return updateProfile(socket, me.username, meta).catch((error) => {
+                console.error("Profile update failed:", error);
+                socket.send(JSON.stringify({
+                    type: "update.profile.result",
+                    data: { success: false, error: "Could not save profile." }
+                }));
+            });
+        }
+        if (meta.type === "account.delete") return deleteAccount(socket, me.username);
 
         if (meta.type === "message.send") {
-            const to = typeof meta.to === "string" ? meta.to : "";
+            const to = normalizeUsername(meta.to);
             if (!to) return sendError(socket, "Falta 'to'.");
             if (typeof meta.data !== "string" || !meta.data) return sendError(socket, "Falta 'data' cifrada.");
 
@@ -259,8 +658,47 @@ io.on("connection", (socket) => {
                 data: meta.data
             };
 
+            if (deletedUsernames.has(to.toLowerCase()) || deletingUsernames.has(to.toLowerCase())) {
+                return sendUserDeleted(socket, to, envelope.id);
+            }
+
+            if (mongoClient) {
+                if (!blockedUsersCollection) {
+                    return socket.send(JSON.stringify({
+                        type: "message.failed",
+                        id: envelope.id,
+                        error: "El servicio de bloqueo no está disponible; no se envió el mensaje."
+                    }));
+                }
+                try {
+                    const sender = me.username.toLowerCase();
+                    const recipient = to.toLowerCase();
+                    const blocked = await blockedUsersCollection.findOne({
+                        $or: [
+                            { _id: recipient, blockedUsers: sender },
+                            { _id: sender, blockedUsers: recipient }
+                        ]
+                    }, { projection: { _id: 1 } });
+                    if (blocked) {
+                        return socket.send(JSON.stringify({
+                            type: "message.blocked",
+                            id: envelope.id
+                        }));
+                    }
+                } catch (error) {
+                    console.error("Failed to check chat block list:", error);
+                    return socket.send(JSON.stringify({
+                        type: "message.failed",
+                        id: envelope.id,
+                        error: "No se pudo verificar el bloqueo; no se envió el mensaje."
+                    }));
+                }
+            }
+
             const targetSocketId = findSocketIdByUsername(to);
             const targetSock = targetSocketId ? sessions.get(targetSocketId)?.socket : null;
+
+
 
             if (targetSock && targetSock.readyState === WebSocket.OPEN) {
                 targetSock.send(JSON.stringify(envelope));
@@ -280,7 +718,7 @@ io.on("connection", (socket) => {
             }));
         }
         if (meta.type === "message.receipt") {
-            const to = typeof meta.to === "string" ? meta.to : "";
+            const to = normalizeUsername(meta.to);
             if (!to || typeof meta.data !== "string") return sendError(socket, "Receipt inválido.");
 
             const envelope = {
@@ -290,6 +728,9 @@ io.on("connection", (socket) => {
                 data: meta.data
             };
 
+            if (deletedUsernames.has(to.toLowerCase()) || deletingUsernames.has(to.toLowerCase())) {
+                return sendUserDeleted(socket, to);
+            }
             const targetSocketId = findSocketIdByUsername(to);
             const targetSock = targetSocketId ? sessions.get(targetSocketId)?.socket : null;
 

@@ -44,6 +44,11 @@
     const appearanceDialog = $("appearanceDialog");
     const chatMenuButton = $("chatMenuButton");
     const chatMenu = $("chatMenu");
+    const blockChatMenuItem = $("blockChatMenuItem");
+    const profileDisplayName = $("profileDisplayName");
+    const profileBio = $("profileBio");
+    const profileAvatar = $("profileAvatar");
+    const profilePassword = $("profilePassword");
     const chatBackgroundFile = $("chatBackgroundFile");
     const backgroundFit = $("backgroundFit");
     const backgroundRepeat = $("backgroundRepeat");
@@ -60,6 +65,7 @@
     // Estado
     // ============================================================
     const contactMap = new Map();
+    const blockedUsernames = new Set();
     let activeId = null;
     let socket = null;
     let identity = null;
@@ -69,6 +75,7 @@
     let pendingContactId = null;
     let retryDelay = 1000;
     let intentionalClose = false;
+    let accountDeleted = false;
     const CHAT_APPEARANCE_KEY = "uassapp-chat-appearance";
     let chatAppearances = (() => { try { return JSON.parse(localStorage.getItem(CHAT_APPEARANCE_KEY) || "{}"); } catch { return {}; } })();
 
@@ -183,6 +190,22 @@
             r.onsuccess = () => res(r.result || []);
             r.onerror = () => rej(r.error);
         });
+    }
+
+    async function clearLocalAccountData() {
+        const db = await openDb();
+        await new Promise((resolve, reject) => {
+            const transaction = db.transaction(Array.from(db.objectStoreNames), "readwrite");
+            for (const store of Array.from(db.objectStoreNames)) {
+                transaction.objectStore(store).clear();
+            }
+            transaction.oncomplete = resolve;
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error || new Error("Local account data could not be cleared."));
+        }).finally(() => db.close());
+        for (const key of Object.keys(localStorage)) {
+            if (key.startsWith("uassapp-")) localStorage.removeItem(key);
+        }
     }
 
     // ============================================================
@@ -424,12 +447,18 @@
     };
 
     function updateChatSubtitle() {
+        const c = activeId ? contactMap.get(activeId) : null;
+        blockChatMenuItem.disabled = !c || c.blocked;
+        blockChatMenuItem.textContent = c?.blocked ? "Chat blocked" : "Block chat";
         if (!activeId) {
             activeSubtitle.textContent = "Messages are sent over a secure connection";
             return;
         }
-        const c = contactMap.get(activeId);
         if (!c) return;
+        if (c.blocked) {
+            activeSubtitle.textContent = "You blocked this chat";
+            return;
+        }
         if (socket?.readyState !== WebSocket.OPEN) {
             activeSubtitle.textContent = "You're offline — reconnecting…";
             return;
@@ -445,9 +474,11 @@
         const connected = socket?.readyState === WebSocket.OPEN;
         const registered = !!registeredUsername;
         const canDraft = !!activeId;
-        input.disabled = !canDraft;
-        sendButton.disabled = !(connected && registered && canDraft);
+        const blocked = !!contactMap.get(activeId)?.blocked;
+        input.disabled = !canDraft || blocked;
+        sendButton.disabled = !(connected && registered && canDraft && !blocked);
         if (!canDraft) input.placeholder = "Select a chat to message";
+        else if (blocked) input.placeholder = "This chat is blocked";
         else if (!connected) input.placeholder = "Offline — reconnecting…";
         else if (!registered) input.placeholder = "Registering…";
         else input.placeholder = "Type a message";
@@ -466,7 +497,8 @@
             contactMap.set(key, {
                 id: key, name: String(name || id || key),
                 messages: [], online: false,
-                publicKey: null, sigPublicKey: null
+                publicKey: null, sigPublicKey: null,
+                blocked: blockedUsernames.has(key)
             });
         }
         const c = contactMap.get(key);
@@ -675,6 +707,7 @@
         socket.addEventListener("close", () => {
             clearInterval(presenceTimer);
             presenceTimer = null;
+            if (accountDeleted) return;
             registeredUsername = null;
             contactMap.forEach(c => { c.online = false; });
             renderContacts();
@@ -730,6 +763,18 @@
         }
         if (data.type === "register.ok") {
             registeredUsername = data.username;
+            const profile = data.profile || {};
+            profileDisplayName.value = typeof profile.displayName === "string" ? profile.displayName : "";
+            profileBio.value = typeof profile.bio === "string" ? profile.bio : "";
+            profileAvatar.value = typeof profile.avatar === "string" ? profile.avatar : "";
+            profilePassword.value = "";
+            blockedUsernames.clear();
+            if (Array.isArray(data.blockedUsers)) {
+                for (const username of data.blockedUsers) {
+                    if (typeof username === "string") blockedUsernames.add(username.toLowerCase());
+                }
+                contactMap.forEach(c => { c.blocked = blockedUsernames.has(c.name.toLowerCase()); });
+            }
             if (!settingsScreen.classList.contains("settings-open")) profilePanel.hidden = true;
             showUsernameStatus("Registered as @" + data.username, true);
             setStatus("Online", "online");
@@ -771,6 +816,89 @@
                 if (d.user.sigPublicKey && c.sigPublicKey !== d.user.sigPublicKey) { c.sigPublicKey = d.user.sigPublicKey; changed = true; }
                 if (changed) saveContact(c);
                 renderContacts();
+            }
+            return;
+        }
+        if (data.type === "user.deleted") {
+            const username = typeof data.username === "string" ? data.username : "";
+            const contact = contactMap.get(username.toLowerCase());
+            if (contact) {
+                contact.deleted = true;
+                contact.online = false;
+                renderContacts();
+            }
+            if (data.id) {
+                const stored = await dbGet("messages", data.id);
+                if (stored) {
+                    stored.status = "failed";
+                    await saveMessage(stored);
+                    const message = contactMap.get(stored.conversationId)?.messages.find(item => item.id === data.id);
+                    if (message) message.status = "failed";
+                    if (activeId === stored.conversationId) renderMessages();
+                }
+            }
+            showPopup("User deleted", username
+                ? `@${username} deleted their account. Messages cannot be sent to this username.`
+                : "This user deleted their account. Messages cannot be sent.");
+            return;
+        }
+        if (data.type === "update.profile.result") {
+            if (data.data?.success) {
+                profilePassword.value = "";
+                showUsernameStatus("Profile saved", true);
+            } else {
+                showPopup("Could not save profile", data.data?.error || "Profile update failed.");
+            }
+            return;
+        }
+        if (data.type === "account.delete.result") {
+            if (!data.data?.success) {
+                showPopup("Could not delete account", data.data?.error || "Account deletion failed.");
+                return;
+            }
+            accountDeleted = true;
+            try {
+                await clearLocalAccountData();
+            } catch (error) {
+                console.error("Failed to clear local account data after server deletion:", error);
+                showPopup("Account deleted", "The server deleted the account, but local data could not be cleared. Clear this browser's site data to remove remaining chats and keys.");
+                return;
+            }
+            contactMap.clear();
+            blockedUsernames.clear();
+            chatAppearances = {};
+            activeId = null;
+            identity = null;
+            registeredUsername = null;
+            usernameInput.value = "";
+            confirmedUsername = "";
+            profileDisplayName.value = "";
+            profileBio.value = "";
+            profileAvatar.value = "";
+            profilePassword.value = "";
+            socket?.close(1000, "Account deleted");
+            app.classList.remove("chat-open", "settings-open");
+            renderContacts();
+            renderMessages();
+            updateChatSubtitle();
+            updateComposerState();
+            showUsernameStatus("Account deleted");
+            showPopup("Account deleted", "Your account, chats, messages, and keys were deleted from this device.");
+            return;
+        }
+        if (data.type === "contact.list.update.result") {
+            const result = data.data || {};
+            const username = typeof result.username === "string" ? result.username : "";
+            const contact = contactMap.get(username.toLowerCase());
+            if (result.success && result.action === "block" && contact) {
+                blockedUsernames.add(username.toLowerCase());
+                contact.blocked = true;
+                renderContacts();
+                updateChatSubtitle();
+                updateComposerState();
+                showPopup("Chat blocked", `You blocked @${contact.name}.`);
+            } else if (!result.success) {
+                showPopup("Could not block chat", result.error || "The chat could not be blocked.");
             }
             return;
         }
@@ -882,6 +1010,19 @@
             return;
         }
 
+        if (data.type === "message.blocked" || data.type === "message.failed") {
+            const stored = await dbGet("messages", data.id);
+            if (!stored) return;
+            stored.status = "failed";
+            await saveMessage(stored);
+            const contact = contactMap.get(stored.conversationId);
+            const message = contact?.messages.find(item => item.id === data.id);
+            if (message) message.status = "failed";
+            if (activeId === stored.conversationId) renderMessages();
+            showUsernameStatus(data.error || "Message not sent: this chat is blocked");
+            return;
+        }
+
         if (data.type === "error") console.warn("Server error:", data.error);
     }
 
@@ -905,6 +1046,10 @@
         }
         const c = contactMap.get(activeId);
         if (!c) return false;
+        if (c.blocked) {
+            showUsernameStatus("This chat is blocked");
+            return false;
+        }
         if (!c.publicKey) {
             socket.send(JSON.stringify({ type: "user.lookup", username: c.name }));
             showPopup("Still connecting", "We don't have " + c.name + "’s public key yet. Please try again in a moment.");
@@ -955,7 +1100,8 @@
                 id: sc.id, name: sc.name,
                 messages: [], online: false,
                 publicKey: sc.publicKey || null,
-                sigPublicKey: sc.sigPublicKey || null
+                sigPublicKey: sc.sigPublicKey || null,
+                blocked: blockedUsernames.has(String(sc.name).toLowerCase())
             });
         }
         const msgs = await dbGetAll("messages");
@@ -1070,6 +1216,30 @@
     });
 
     searchInput.addEventListener("input", renderContacts);
+    $("saveProfileButton").addEventListener("click", () => {
+        if (!registeredUsername || socket?.readyState !== WebSocket.OPEN) {
+            showPopup("Can't save profile", "Connect and register before updating your profile.");
+            return;
+        }
+        const request = {
+            type: "update.profile",
+            profile: {
+                displayName: profileDisplayName.value,
+                bio: profileBio.value,
+                avatar: profileAvatar.value
+            }
+        };
+        if (profilePassword.value) request.password = profilePassword.value;
+        socket.send(JSON.stringify(request));
+    });
+    $("deleteAccountButton").addEventListener("click", () => {
+        if (!registeredUsername || socket?.readyState !== WebSocket.OPEN) {
+            showPopup("Can't delete account", "Connect and register before deleting your account.");
+            return;
+        }
+        if (!window.confirm("Permanently delete your account? This removes your username and queued messages and clears chats and encryption keys from this device. Other people's saved copies cannot be erased.")) return;
+        socket.send(JSON.stringify({ type: "account.delete" }));
+    });
     chatMenuButton.addEventListener("click", () => {
         const opening = chatMenu.hidden;
         chatMenu.hidden = !opening;
@@ -1085,6 +1255,22 @@
         chatMenu.hidden = true;
         chatMenuButton.setAttribute("aria-expanded", "false");
         openAppearanceDialog();
+    });
+    blockChatMenuItem.addEventListener("click", () => {
+        const contact = contactMap.get(activeId);
+        chatMenu.hidden = true;
+        chatMenuButton.setAttribute("aria-expanded", "false");
+        if (!contact || contact.blocked) return;
+        if (!registeredUsername || socket?.readyState !== WebSocket.OPEN) {
+            showPopup("Can't block chat", "Connect and register before blocking a chat.");
+            return;
+        }
+        if (!window.confirm(`Block ${contact.name}? They won't be able to send you messages, and you won't be able to message them.`)) return;
+        socket.send(JSON.stringify({
+            type: "contact.list.update",
+            action: "block",
+            username: contact.name
+        }));
     });
     $("appearanceClose").addEventListener("click", () => appearanceDialog.close());
     $("clearAppearance").addEventListener("click", () => {

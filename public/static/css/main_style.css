@@ -809,6 +809,36 @@ body {
     font-size: 14px
 }
 
+.settings-content .settings-section input:not([type="checkbox"]),
+.settings-content .settings-section textarea {
+    width: 100%;
+    border: 1px solid #d6dcdf;
+    border-radius: 8px;
+    padding: 10px;
+    background: #fff;
+    color: #111b21;
+    font: 14px var(--app-font-family)
+}
+
+.settings-content .settings-section textarea {
+    resize: vertical
+}
+
+.settings-content .settings-section button {
+    align-self: flex-start;
+    border: 0;
+    border-radius: 8px;
+    padding: 10px 14px;
+    background: var(--accent);
+    color: #fff;
+    font: 600 14px var(--app-font-family);
+    cursor: pointer
+}
+
+.settings-content .settings-section .delete-account-button {
+    background: #b42318
+}
+
 .settings-section label.settings-toggle {
     display: flex;
     align-items: center;
@@ -1217,6 +1247,13 @@ body {
 
 [data-theme="dark"] .settings-content .settings-section {
     border-color: #2a3942
+}
+
+[data-theme="dark"] .settings-content .settings-section input:not([type="checkbox"]),
+[data-theme="dark"] .settings-content .settings-section textarea {
+    background: #111b21;
+    border-color: #3b4a54;
+    color: #e9edef
 }
 
 @media(max-width:700px) {
