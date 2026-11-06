@@ -44,6 +44,6 @@ APP.get("/end-to-end", (_req, res) => {
     res.render("end-to-end-info.ejs");
 })
 
-APP.listen(3737, "localhost", 0, () => {
+APP.listen(3737, "localhost", () => {
     console.log("app en http://localhost:3737")
 })

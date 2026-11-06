@@ -240,6 +240,10 @@ dialog.popup::backdrop {
     gap: 8px
 }
 
+#popupConfirmActions[hidden] {
+    display: none
+}
+
 .popup button {
     border: 0;
     border-radius: 8px;
@@ -341,7 +345,14 @@ dialog.popup::backdrop {
     background: #dfe5e7;
     color: #52636b;
     font-size: 17px;
-    font-weight: 600
+    font-weight: 600;
+    overflow: hidden
+}
+
+.avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover
 }
 
 .contact-info {
@@ -503,6 +514,21 @@ dialog.popup::backdrop {
 .bubble.outgoing {
     align-self: flex-end;
     background: #d9eaff
+}
+
+.system-card {
+    align-self: center;
+    max-width: min(90%, 420px);
+    padding: 6px 12px;
+    border: 1px solid rgba(0, 0, 0, .06);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, .82);
+    box-shadow: 0 1px 2px #0001;
+    color: #53636b;
+    font-size: 12px;
+    line-height: 1.4;
+    text-align: center;
+    overflow-wrap: anywhere
 }
 
 .time {
@@ -938,6 +964,12 @@ body {
 [data-theme="dark"] .bubble {
     background: #202c33;
     color: #e9edef
+}
+
+[data-theme="dark"] .system-card {
+    border-color: #3a4b55;
+    background: rgba(32, 44, 51, .92);
+    color: #c4d0d5
 }
 
 [data-theme="dark"] .bubble.outgoing {

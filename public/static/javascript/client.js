@@ -3,7 +3,9 @@
     // ============================================================
     // Config
     // ============================================================
-    const SOCKET_URL = "wss://message.antakim.uk";
+    const SOCKET_URL = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname)
+        ? `ws://${window.location.hostname === "::1" ? "[::1]" : window.location.hostname}:3736`
+        : "wss://message.antakim.uk";
     const MAX_MESSAGE_BYTES = 4096;
     const STORAGE_USERNAME_KEY = "uassapp-username";
     const IDB_NAME = "uassapp";
@@ -26,6 +28,10 @@
     const popupTitle = $("popupTitle");
     const popupMessage = $("popupMessage");
     const popupContinue = $("popupContinue");
+    const popupClose = $("popupClose");
+    const popupConfirmActions = $("popupConfirmActions");
+    const popupCancel = $("popupCancel");
+    const popupConfirm = $("popupConfirm");
     const statusDot = $("statusDot");
     const statusText = $("statusText");
     const activeName = $("activeName");
@@ -76,6 +82,10 @@
     let retryDelay = 1000;
     let intentionalClose = false;
     let accountDeleted = false;
+    let popupConfirmationResolver = null;
+    let pendingContactListRequestId = null;
+    let contactListUpdateTimer = null;
+    const pendingContactLookups = new Map();
     const CHAT_APPEARANCE_KEY = "uassapp-chat-appearance";
     let chatAppearances = (() => { try { return JSON.parse(localStorage.getItem(CHAT_APPEARANCE_KEY) || "{}"); } catch { return {}; } })();
 
@@ -407,13 +417,35 @@
         catch { return ""; }
     }
     function showPopup(title, message, continueToChat = false) {
+        if (popupConfirmationResolver) popupConfirmationResolver(false);
+        popupConfirmationResolver = null;
         popupTitle.textContent = title;
         popupMessage.textContent = message;
         popupContinue.hidden = !continueToChat;
+        popupConfirmActions.hidden = true;
         const usernameToRestore = registeredUsername || getSavedUsername() || confirmedUsername;
         popupContinue.textContent = usernameToRestore
             ? `Continue as @${usernameToRestore}` : "Continue to chat";
         if (!appPopup.open) appPopup.showModal();
+    }
+    function confirmPopup(title, message, confirmLabel) {
+        if (popupConfirmationResolver) popupConfirmationResolver(false);
+        popupTitle.textContent = title;
+        popupMessage.textContent = message;
+        popupContinue.hidden = true;
+        popupClose.hidden = true;
+        popupConfirm.textContent = confirmLabel;
+        popupConfirmActions.hidden = false;
+        if (!appPopup.open) appPopup.showModal();
+        return new Promise(resolve => { popupConfirmationResolver = resolve; });
+    }
+    function finishPopupConfirmation(confirmed) {
+        const resolve = popupConfirmationResolver;
+        popupConfirmationResolver = null;
+        popupConfirmActions.hidden = true;
+        popupClose.hidden = false;
+        if (appPopup.open) appPopup.close();
+        resolve?.(confirmed);
     }
     function requireUsername(contactId = null) {
         if (getUsername()) return false;
@@ -425,7 +457,15 @@
         usernameInput.focus();
         return true;
     }
-    $("popupClose").addEventListener("click", () => appPopup.close());
+    popupClose.addEventListener("click", () => {
+        if (popupConfirmationResolver) finishPopupConfirmation(false);
+        else appPopup.close();
+    });
+    popupConfirm.addEventListener("click", () => finishPopupConfirmation(true));
+    popupCancel.addEventListener("click", () => finishPopupConfirmation(false));
+    appPopup.addEventListener("cancel", () => {
+        if (popupConfirmationResolver) finishPopupConfirmation(false);
+    });
     popupContinue.addEventListener("click", () => {
         const contactId = pendingContactId;
         pendingContactId = null;
@@ -448,8 +488,8 @@
 
     function updateChatSubtitle() {
         const c = activeId ? contactMap.get(activeId) : null;
-        blockChatMenuItem.disabled = !c || c.blocked;
-        blockChatMenuItem.textContent = c?.blocked ? "Chat blocked" : "Block chat";
+        blockChatMenuItem.disabled = !c;
+        blockChatMenuItem.textContent = c?.blocked ? "Unblock chat" : "Block chat";
         if (!activeId) {
             activeSubtitle.textContent = "Messages are sent over a secure connection";
             return;
@@ -457,6 +497,10 @@
         if (!c) return;
         if (c.blocked) {
             activeSubtitle.textContent = "You blocked this chat";
+            return;
+        }
+        if (c.deleted) {
+            activeSubtitle.textContent = "This account was deleted";
             return;
         }
         if (socket?.readyState !== WebSocket.OPEN) {
@@ -467,18 +511,21 @@
             activeSubtitle.textContent = "Registering…";
             return;
         }
-        activeSubtitle.textContent = c.online ? "online" : "last seen recently";
+        activeSubtitle.textContent = c.profile.bio || (c.online ? "online" : "last seen recently");
     }
 
     function updateComposerState() {
         const connected = socket?.readyState === WebSocket.OPEN;
         const registered = !!registeredUsername;
         const canDraft = !!activeId;
-        const blocked = !!contactMap.get(activeId)?.blocked;
-        input.disabled = !canDraft || blocked;
-        sendButton.disabled = !(connected && registered && canDraft && !blocked);
+        const contact = contactMap.get(activeId);
+        const blocked = !!contact?.blocked;
+        const deleted = !!contact?.deleted;
+        input.disabled = !canDraft || blocked || deleted;
+        sendButton.disabled = !(connected && registered && canDraft && !blocked && !deleted);
         if (!canDraft) input.placeholder = "Select a chat to message";
         else if (blocked) input.placeholder = "This chat is blocked";
+        else if (deleted) input.placeholder = "This account was deleted";
         else if (!connected) input.placeholder = "Offline — reconnecting…";
         else if (!registered) input.placeholder = "Registering…";
         else input.placeholder = "Type a message";
@@ -498,20 +545,95 @@
                 id: key, name: String(name || id || key),
                 messages: [], online: false,
                 publicKey: null, sigPublicKey: null,
-                blocked: blockedUsernames.has(key)
+                blocked: blockedUsernames.has(key),
+                profile: {}
             });
         }
         const c = contactMap.get(key);
         if (name) c.name = String(name);
         return c;
     }
+    function setAvatar(element, name, profile = {}) {
+        element.replaceChildren();
+        element.textContent = (profile.displayName || name || "?").trim().charAt(0).toUpperCase() || "?";
+        const avatarUrl = typeof profile.avatar === "string" ? profile.avatar : "";
+        if (!/^https?:\/\//i.test(avatarUrl)) return;
+        const image = document.createElement("img");
+        image.src = avatarUrl;
+        image.alt = "";
+        image.referrerPolicy = "no-referrer";
+        image.addEventListener("error", () => {
+            element.replaceChildren(document.createTextNode(
+                (profile.displayName || name || "?").trim().charAt(0).toUpperCase() || "?"
+            ));
+        }, { once: true });
+        element.replaceChildren(image);
+    }
     async function saveContact(c) {
         await dbPut("contacts", {
             id: c.id, name: c.name,
-            publicKey: c.publicKey, sigPublicKey: c.sigPublicKey
+            publicKey: c.publicKey, sigPublicKey: c.sigPublicKey,
+            profile: c.profile || {},
+            deleted: !!c.deleted
         });
     }
     async function saveMessage(m) { await dbPut("messages", m); }
+    async function recordKeyChange(c) {
+        const notice = {
+            id: crypto.randomUUID(),
+            conversationId: c.id,
+            kind: "system",
+            text: `Se cambiaron las claves de cifrado de @${c.name}.`,
+            timestamp: Date.now()
+        };
+        c.messages.push(notice);
+        await saveMessage(notice);
+        if (activeId === c.id) renderMessages();
+    }
+    async function updateContactKeys(c, publicKey, sigPublicKey) {
+        const nextPublicKey = typeof publicKey === "string" && publicKey ? publicKey : null;
+        const nextSigPublicKey = typeof sigPublicKey === "string" && sigPublicKey ? sigPublicKey : null;
+        const changed = Boolean(
+            (nextPublicKey && c.publicKey && c.publicKey !== nextPublicKey) ||
+            (nextSigPublicKey && c.sigPublicKey && c.sigPublicKey !== nextSigPublicKey)
+        );
+        if (nextPublicKey) c.publicKey = nextPublicKey;
+        if (nextSigPublicKey) c.sigPublicKey = nextSigPublicKey;
+        if (changed) await recordKeyChange(c);
+        await saveContact(c);
+        return changed;
+    }
+    function requestContactLookup(c) {
+        if (socket?.readyState !== WebSocket.OPEN) return Promise.resolve(false);
+        const requestId = crypto.randomUUID();
+        return new Promise(resolve => {
+            const timer = setTimeout(() => {
+                pendingContactLookups.delete(requestId);
+                resolve(false);
+            }, 8000);
+            pendingContactLookups.set(requestId, { contactId: c.id, timer, resolve });
+            try {
+                socket.send(JSON.stringify({
+                    type: "user.lookup",
+                    username: c.name,
+                    requestId
+                }));
+            } catch (error) {
+                clearTimeout(timer);
+                pendingContactLookups.delete(requestId);
+                console.error("Could not refresh chat keys:", error);
+                resolve(false);
+            }
+        });
+    }
+    function finishContactLookup(requestId, success) {
+        const pending = pendingContactLookups.get(requestId);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        pendingContactLookups.delete(requestId);
+        const contact = contactMap.get(pending.contactId);
+        pending.resolve(Boolean(success && contact?.publicKey && contact?.sigPublicKey));
+    }
 
     function statusIcon(s) {
         switch (s) {
@@ -570,7 +692,16 @@
             note.className = "welcome";
             note.textContent = "No messages yet. Send a message to start the conversation.";
             messagesEl.append(note);
-        } else c.messages.forEach(m => messagesEl.append(makeBubble(m)));
+        } else c.messages.forEach(m => {
+            if (m.kind === "system") {
+                const card = document.createElement("div");
+                card.className = "system-card";
+                card.textContent = String(m.text || "");
+                messagesEl.append(card);
+            } else {
+                messagesEl.append(makeBubble(m));
+            }
+        });
         if (forceBottom || wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
         else messagesEl.scrollTop = previousTop;
         if (selected) {
@@ -596,7 +727,7 @@
 
         contactsEl.replaceChildren();
         const list = [...contactMap.values()]
-            .filter(c => c.name.toLowerCase().includes(q))
+            .filter(c => c.name.toLowerCase().includes(q) || (c.profile.displayName || "").toLowerCase().includes(q))
             .sort((a, b) =>
                 (unreadCount(b) > 0) - (unreadCount(a) > 0) ||
                 Number(b.online) - Number(a.online) ||
@@ -615,15 +746,17 @@
             btn.dataset.id = c.id;
             const av = document.createElement("span");
             av.className = "avatar";
-            av.textContent = c.name.trim().charAt(0).toUpperCase() || "?";
+            setAvatar(av, c.name, c.profile);
             const info = document.createElement("span");
             info.className = "contact-info";
             const nm = document.createElement("span");
-            nm.className = "contact-name"; nm.textContent = c.name;
+            nm.className = "contact-name"; nm.textContent = c.profile.displayName || c.name;
             const pv = document.createElement("span");
             pv.className = "preview";
             const last = c.messages.at(-1);
-            pv.textContent = last ? String(last.text ?? "") : "Start a conversation";
+            pv.textContent = c.deleted
+                ? "Account deleted"
+                : last ? String(last.text ?? "") : c.profile.bio || `@${c.name}`;
             info.append(nm, pv);
             btn.append(av, info);
             const u = unreadCount(c);
@@ -646,8 +779,8 @@
         if (!continueWithoutUsername && requireUsername(id)) return;
         activeId = id;
         const c = contactMap.get(id);
-        activeName.textContent = c.name;
-        activeAvatar.textContent = c.name.trim().charAt(0).toUpperCase() || "?";
+        activeName.textContent = c.profile.displayName || c.name;
+        setAvatar(activeAvatar, c.name, c.profile);
         applyChatAppearance();
         document.querySelectorAll(".contact").forEach(el =>
             el.classList.toggle("active", el.dataset.id === id));
@@ -656,9 +789,7 @@
         updateChatSubtitle();
         updateComposerState();
         if (autoFocus.checked && window.matchMedia("(min-width: 701px)").matches) input.focus();
-        if (!c.publicKey && socket?.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: "user.lookup", username: c.name }));
-        }
+        requestContactLookup(c);
         await markConversationRead(id);
     }
 
@@ -707,6 +838,11 @@
         socket.addEventListener("close", () => {
             clearInterval(presenceTimer);
             presenceTimer = null;
+            for (const pending of pendingContactLookups.values()) {
+                clearTimeout(pending.timer);
+                pending.resolve(false);
+            }
+            pendingContactLookups.clear();
             if (accountDeleted) return;
             registeredUsername = null;
             contactMap.forEach(c => { c.online = false; });
@@ -773,8 +909,9 @@
                 for (const username of data.blockedUsers) {
                     if (typeof username === "string") blockedUsernames.add(username.toLowerCase());
                 }
-                contactMap.forEach(c => { c.blocked = blockedUsernames.has(c.name.toLowerCase()); });
             }
+            contactMap.forEach(c => { c.blocked = blockedUsernames.has(c.name.toLowerCase()); });
+            renderContacts();
             if (!settingsScreen.classList.contains("settings-open")) profilePanel.hidden = true;
             showUsernameStatus("Registered as @" + data.username, true);
             setStatus("Online", "online");
@@ -787,6 +924,7 @@
             }, 30000);
             updateChatSubtitle();
             updateComposerState();
+            for (const contact of contactMap.values()) requestContactLookup(contact);
             return;
         }
         if (data.type === "register.error") {
@@ -801,7 +939,9 @@
             contactMap.forEach(c => { c.online = false; });
             for (const u of list) {
                 if (u === registeredUsername) continue;
-                getContact(u, u).online = true;
+                const contact = getContact(u, u);
+                contact.online = true;
+                contact.deleted = false;
             }
             renderContacts();
             updateChatSubtitle();
@@ -811,21 +951,54 @@
             const d = data.data || {};
             if (d.success && d.user?.username) {
                 const c = getContact(d.user.username, d.user.username);
-                let changed = false;
-                if (d.user.publicKey && c.publicKey !== d.user.publicKey) { c.publicKey = d.user.publicKey; changed = true; }
-                if (d.user.sigPublicKey && c.sigPublicKey !== d.user.sigPublicKey) { c.sigPublicKey = d.user.sigPublicKey; changed = true; }
-                if (changed) saveContact(c);
+                c.deleted = false;
+                await updateContactKeys(c, d.user.publicKey, d.user.sigPublicKey);
+                if (d.user.profile && typeof d.user.profile === "object") {
+                    c.profile = {
+                        displayName: typeof d.user.profile.displayName === "string" ? d.user.profile.displayName : "",
+                        bio: typeof d.user.profile.bio === "string" ? d.user.profile.bio : "",
+                        avatar: typeof d.user.profile.avatar === "string" ? d.user.profile.avatar : ""
+                    };
+                    await saveContact(c);
+                }
+                finishContactLookup(data.requestId, true);
                 renderContacts();
+                if (activeId === c.id) {
+                    activeName.textContent = c.profile.displayName || c.name;
+                    setAvatar(activeAvatar, c.name, c.profile);
+                    updateChatSubtitle();
+                    updateComposerState();
+                }
+            } else {
+                finishContactLookup(data.requestId, false);
+            }
+            return;
+        }
+        if (data.type === "user.keys.updated") {
+            const username = typeof data.username === "string" ? data.username : "";
+            const contact = contactMap.get(username.toLowerCase());
+            if (!contact) return;
+            contact.deleted = false;
+            contact.online = true;
+            await updateContactKeys(contact, data.publicKey, data.sigPublicKey);
+            renderContacts();
+            if (activeId === contact.id) {
+                updateChatSubtitle();
+                updateComposerState();
             }
             return;
         }
         if (data.type === "user.deleted") {
             const username = typeof data.username === "string" ? data.username : "";
+            finishContactLookup(data.requestId, false);
             const contact = contactMap.get(username.toLowerCase());
             if (contact) {
                 contact.deleted = true;
                 contact.online = false;
+                await saveContact(contact);
                 renderContacts();
+                updateChatSubtitle();
+                updateComposerState();
             }
             if (data.id) {
                 const stored = await dbGet("messages", data.id);
@@ -888,15 +1061,23 @@
         }
         if (data.type === "contact.list.update.result") {
             const result = data.data || {};
+            if (data.requestId && data.requestId === pendingContactListRequestId) {
+                clearTimeout(contactListUpdateTimer);
+                contactListUpdateTimer = null;
+                pendingContactListRequestId = null;
+            }
             const username = typeof result.username === "string" ? result.username : "";
             const contact = contactMap.get(username.toLowerCase());
-            if (result.success && result.action === "block" && contact) {
-                blockedUsernames.add(username.toLowerCase());
-                contact.blocked = true;
+            if (result.success && (result.action === "block" || result.action === "unblock")) {
+                const blocked = result.action === "block";
+                if (blocked) blockedUsernames.add(username.toLowerCase());
+                else blockedUsernames.delete(username.toLowerCase());
+                if (contact) contact.blocked = blocked;
                 renderContacts();
                 updateChatSubtitle();
                 updateComposerState();
-                showPopup("Chat blocked", `You blocked @${contact.name}.`);
+                showPopup(blocked ? "Chat blocked" : "Chat unblocked",
+                    blocked ? `You blocked @${contact?.name || username}.` : `You unblocked @${contact?.name || username}.`);
             } else if (!result.success) {
                 showPopup("Could not block chat", result.error || "The chat could not be blocked.");
             }
@@ -922,17 +1103,11 @@
                     if (signature && sigPublicKey) {
                         const ok = await verify(sigPublicKey, payload, signature);
                         if (ok) {
-                            if (!c.sigPublicKey) { c.sigPublicKey = sigPublicKey; await saveContact(c); }
-                            text = (c.sigPublicKey === sigPublicKey)
-                                ? payload.text
-                                : "[⚠ la llave del remitente cambió] " + payload.text;
                             ts = payload.timestamp || ts;
                             senderEncPub = payload.senderEncPublicKey || null;
+                            await updateContactKeys(c, senderEncPub, sigPublicKey);
+                            text = payload.text;
                             verified = true;
-                            if (!c.publicKey && senderEncPub) {
-                                c.publicKey = senderEncPub;
-                                await saveContact(c);
-                            }
                         } else text = "[firma inválida]";
                     } else text = payload.text;
                 }
@@ -1046,13 +1221,21 @@
         }
         const c = contactMap.get(activeId);
         if (!c) return false;
+        if (c.deleted) {
+            showUsernameStatus("This account has been deleted");
+            return false;
+        }
         if (c.blocked) {
             showUsernameStatus("This chat is blocked");
             return false;
         }
-        if (!c.publicKey) {
-            socket.send(JSON.stringify({ type: "user.lookup", username: c.name }));
-            showPopup("Still connecting", "We don't have " + c.name + "’s public key yet. Please try again in a moment.");
+        if (!await requestContactLookup(c)) {
+            if (c.deleted) return false;
+            showPopup("Chat keys unavailable", "Could not retrieve the current encryption keys for @" + c.name + ". Please try again.");
+            return false;
+        }
+        if (!socket || socket.readyState !== WebSocket.OPEN || !registeredUsername) {
+            showUsernameStatus("Connection changed — message not sent");
             return false;
         }
 
@@ -1101,7 +1284,9 @@
                 messages: [], online: false,
                 publicKey: sc.publicKey || null,
                 sigPublicKey: sc.sigPublicKey || null,
-                blocked: blockedUsernames.has(String(sc.name).toLowerCase())
+                blocked: blockedUsernames.has(String(sc.name).toLowerCase()),
+                profile: sc.profile && typeof sc.profile === "object" ? sc.profile : {},
+                deleted: !!sc.deleted
             });
         }
         const msgs = await dbGetAll("messages");
@@ -1256,21 +1441,55 @@
         chatMenuButton.setAttribute("aria-expanded", "false");
         openAppearanceDialog();
     });
-    blockChatMenuItem.addEventListener("click", () => {
+    blockChatMenuItem.addEventListener("click", async () => {
         const contact = contactMap.get(activeId);
         chatMenu.hidden = true;
         chatMenuButton.setAttribute("aria-expanded", "false");
-        if (!contact || contact.blocked) return;
+        if (!contact) return;
         if (!registeredUsername || socket?.readyState !== WebSocket.OPEN) {
-            showPopup("Can't block chat", "Connect and register before blocking a chat.");
+            showPopup("Can't update chat block", "Connect and register before changing this chat's block.");
             return;
         }
-        if (!window.confirm(`Block ${contact.name}? They won't be able to send you messages, and you won't be able to message them.`)) return;
-        socket.send(JSON.stringify({
-            type: "contact.list.update",
-            action: "block",
-            username: contact.name
-        }));
+        const action = contact.blocked ? "unblock" : "block";
+        const confirmed = await confirmPopup(
+            action === "block" ? "Block chat?" : "Unblock chat?",
+            action === "block"
+                ? `Are you sure you want to block ${contact.name}? You won't be able to send messages, and their messages won't reach you.`
+                : `Are you sure you want to unblock ${contact.name}?`,
+            action === "block" ? "Block chat" : "Unblock chat"
+        );
+        if (!confirmed) return;
+        if (!registeredUsername || socket?.readyState !== WebSocket.OPEN) {
+            showPopup("Chat not updated", "The connection closed before the request could be sent. Please try again.");
+            return;
+        }
+        if (pendingContactListRequestId) {
+            showPopup("Request pending", "Wait for the current block update to finish.");
+            return;
+        }
+        const requestId = crypto.randomUUID();
+        pendingContactListRequestId = requestId;
+        contactListUpdateTimer = setTimeout(() => {
+            if (pendingContactListRequestId !== requestId) return;
+            pendingContactListRequestId = null;
+            contactListUpdateTimer = null;
+            showPopup("No response from server", "The block update was not confirmed. Check the connection and try again.");
+        }, 10000);
+        try {
+            socket.send(JSON.stringify({
+                type: "contact.list.update",
+                requestId,
+                action,
+                username: contact.name
+            }));
+        } catch (error) {
+            clearTimeout(contactListUpdateTimer);
+            contactListUpdateTimer = null;
+            pendingContactListRequestId = null;
+            console.error("Could not send chat block update:", error);
+            showPopup("Chat not updated", "The request could not be sent. Check your connection and try again.");
+            return;
+        }
     });
     $("appearanceClose").addEventListener("click", () => appearanceDialog.close());
     $("clearAppearance").addEventListener("click", () => {
