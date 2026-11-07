@@ -5,4 +5,6 @@ MongoDB is used for account profiles, blocked usernames, and deleted-username to
 
 When a username is registered again with new encryption or signing keys, the stored public keys are replaced. Connected clients receive the new keys; other clients refresh them before sending. A centered chat card marks each detected key change. Usernames are not authenticated independently of their keys, so a username may be claimed with a new key when it is not currently online.
 
+General settings include alert preferences for deleted-account status and contact key changes. These preferences are stored in the browser; both alert types are enabled by default.
+
 Account deletion removes the user's account record, queued messages, and block-list references. A minimal username tombstone remains until that username is registered again, so lookups and message attempts return `user.deleted`. The deleting browser clears its local contacts, messages, identity keys, and Qchat preferences; other users' saved message copies and other devices cannot be remotely erased. Chat blocking and profile/account persistence require MongoDB.

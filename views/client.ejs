@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#075e54">
     <title>Qchat Web</title>
-    <link rel="stylesheet" href="/static/css/main_style.css?v=20261106-1718">
+    <link rel="stylesheet" href="/static/css/main_style.css?v=20261106-1752">
     <style>
         /* + estilos */
     </style>
@@ -77,13 +77,15 @@
         </section>
     </main>
     <dialog class="popup" id="appPopup" aria-labelledby="popupTitle" aria-describedby="popupMessage">
-        <h2 id="popupTitle">Notice</h2>
-        <p id="popupMessage"></p>
-        <div class="popup-actions"><button class="secondary" id="popupContinue" type="button" hidden>Continue to
-                chat</button><button id="popupClose" type="button">Got it</button></div>
-        <div class="popup-actions" id="popupConfirmActions" hidden>
-            <button class="secondary" id="popupCancel" type="button">Cancel</button>
-            <button id="popupConfirm" type="button">Confirm</button>
+        <div class="popup-card">
+            <h2 id="popupTitle">Notice</h2>
+            <p id="popupMessage"></p>
+            <div class="popup-actions"><button class="secondary" id="popupContinue" type="button" hidden>Continue to
+                    chat</button><button id="popupClose" type="button">Got it</button></div>
+            <div class="popup-actions" id="popupConfirmActions" hidden>
+                <button class="secondary" id="popupCancel" type="button">Cancel</button>
+                <button id="popupConfirm" type="button">Confirm</button>
+            </div>
         </div>
     </dialog>
     <section class="settings-screen" id="settingsScreen" aria-label="General settings" aria-hidden="true">
@@ -95,7 +97,8 @@
             <nav class="settings-nav" aria-label="Settings categories"><button type="button"
                     data-settings-category="appearance" aria-current="page">Appearance</button><button type="button"
                     data-settings-category="profile">Profile</button><button type="button"
-                    data-settings-category="accessibility">Accessibility</button></nav>
+                    data-settings-category="accessibility">Accessibility</button><button type="button"
+                    data-settings-category="alerts">Alerts</button></nav>
             <div class="settings-content">
                 <section data-settings-panel="appearance">
                     <h2>Appearance</h2>
@@ -149,6 +152,13 @@
                     <div class="settings-section"><label class="settings-toggle" for="autoFocus"><span>Auto focus on
                                 desktop</span><input id="autoFocus" type="checkbox"></label></div>
                 </section>
+                <section data-settings-panel="alerts" hidden>
+                    <h2>Alerts</h2>
+                    <div class="settings-section"><label class="settings-toggle" for="accountStatusAlerts"><span>Show account status alerts</span><input
+                                id="accountStatusAlerts" type="checkbox"></label></div>
+                    <div class="settings-section"><label class="settings-toggle" for="keyChangeAlerts"><span>Show when users change keys</span><input
+                                id="keyChangeAlerts" type="checkbox"></label></div>
+                </section>
             </div>
         </div>
     </section>
@@ -184,6 +194,6 @@
         <div class="popup-actions"><button class="secondary" id="clearAppearance" type="button">Reset</button><button
                 class="secondary" id="appearanceClose" type="button">Done</button></div>
     </dialog>
-    <script src="/static/javascript/client.js?v=20261106-1718"></script>
+    <script src="/static/javascript/client.js?v=20261106-1752"></script>
 
 </html>

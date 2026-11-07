@@ -267,6 +267,52 @@ dialog.popup::backdrop {
     background: #e2e7e9
 }
 
+@media(min-width:701px) {
+    dialog.popup.user-deleted-popup {
+        position: fixed;
+        inset: 0 0 0 clamp(280px, 28vw, 420px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: auto;
+        max-width: none;
+        height: auto;
+        max-height: none;
+        margin: 0;
+        padding: 24px;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        pointer-events: none
+    }
+
+    dialog.popup.user-deleted-popup::before {
+        position: absolute;
+        inset: 0;
+        background: #102a2a80;
+        backdrop-filter: blur(2px);
+        pointer-events: none;
+        content: ""
+    }
+
+    dialog.popup.user-deleted-popup::backdrop {
+        background: transparent;
+        backdrop-filter: none
+    }
+
+    .user-deleted-popup .popup-card {
+        width: min(380px, 100%);
+        padding: 24px;
+        border-radius: 14px;
+        background: #fff;
+        box-shadow: 0 12px 40px #0004;
+        position: relative;
+        z-index: 1;
+        pointer-events: auto
+    }
+}
+
 .connection {
     font-size: 12px;
     color: #667781;
@@ -990,6 +1036,11 @@ body {
 }
 
 [data-theme="dark"] dialog.popup {
+    background: #202c33;
+    color: #e9edef
+}
+
+[data-theme="dark"] .user-deleted-popup .popup-card {
     background: #202c33;
     color: #e9edef
 }

@@ -47,6 +47,8 @@
     const fontSelect = $("fontSelect");
     const enterToSend = $("enterToSend");
     const autoFocus = $("autoFocus");
+    const accountStatusAlerts = $("accountStatusAlerts");
+    const keyChangeAlerts = $("keyChangeAlerts");
     const appearanceDialog = $("appearanceDialog");
     const chatMenuButton = $("chatMenuButton");
     const chatMenu = $("chatMenu");
@@ -87,11 +89,26 @@
     let contactListUpdateTimer = null;
     const pendingContactLookups = new Map();
     const CHAT_APPEARANCE_KEY = "uassapp-chat-appearance";
+    function getBooleanPreference(key, defaultValue = true) {
+        try {
+            const value = localStorage.getItem(key);
+            return value === null ? defaultValue : value === "true";
+        } catch {
+            return defaultValue;
+        }
+    }
     let chatAppearances = (() => { try { return JSON.parse(localStorage.getItem(CHAT_APPEARANCE_KEY) || "{}"); } catch { return {}; } })();
+    accountStatusAlerts.checked = getBooleanPreference("uassapp-account-status-alerts");
+    keyChangeAlerts.checked = getBooleanPreference("uassapp-key-change-alerts");
 
     function saveChatAppearances() {
         try { localStorage.setItem(CHAT_APPEARANCE_KEY, JSON.stringify(chatAppearances)); }
         catch { showUsernameStatus("Could not save chat appearance — image may be too large"); }
+    }
+    function dismissUserDeletedAlert() {
+        if (!appPopup.classList.contains("user-deleted-popup")) return;
+        if (appPopup.open) appPopup.close();
+        appPopup.classList.remove("user-deleted-popup");
     }
     function getChatAppearance(id = activeId) {
         return id ? (chatAppearances[id] || {}) : {};
@@ -410,15 +427,25 @@
     autoFocus.addEventListener("change", () => {
         try { localStorage.setItem("uassapp-auto-focus", String(autoFocus.checked)); } catch { }
     });
+    accountStatusAlerts.addEventListener("change", () => {
+        try { localStorage.setItem("uassapp-account-status-alerts", String(accountStatusAlerts.checked)); } catch { }
+        if (!accountStatusAlerts.checked) dismissUserDeletedAlert();
+    });
+    keyChangeAlerts.addEventListener("change", () => {
+        try { localStorage.setItem("uassapp-key-change-alerts", String(keyChangeAlerts.checked)); } catch { }
+        if (activeId) renderMessages();
+    });
     const getUsername = () => normalizeUsername(usernameInput.value);
     let confirmedUsername = getUsername();
     function getSavedUsername() {
         try { return normalizeUsername(localStorage.getItem(STORAGE_USERNAME_KEY)); }
         catch { return ""; }
     }
-    function showPopup(title, message, continueToChat = false) {
+    function showPopup(title, message, continueToChat = false, popupClass = "") {
         if (popupConfirmationResolver) popupConfirmationResolver(false);
         popupConfirmationResolver = null;
+        if (appPopup.open) appPopup.close();
+        appPopup.classList.toggle("user-deleted-popup", popupClass === "user-deleted-popup");
         popupTitle.textContent = title;
         popupMessage.textContent = message;
         popupContinue.hidden = !continueToChat;
@@ -426,17 +453,23 @@
         const usernameToRestore = registeredUsername || getSavedUsername() || confirmedUsername;
         popupContinue.textContent = usernameToRestore
             ? `Continue as @${usernameToRestore}` : "Continue to chat";
-        if (!appPopup.open) appPopup.showModal();
+        if (popupClass === "user-deleted-popup" && window.matchMedia("(min-width: 701px)").matches) {
+            appPopup.show();
+        } else {
+            appPopup.showModal();
+        }
     }
     function confirmPopup(title, message, confirmLabel) {
         if (popupConfirmationResolver) popupConfirmationResolver(false);
+        if (appPopup.open) appPopup.close();
+        appPopup.classList.remove("user-deleted-popup");
         popupTitle.textContent = title;
         popupMessage.textContent = message;
         popupContinue.hidden = true;
         popupClose.hidden = true;
         popupConfirm.textContent = confirmLabel;
         popupConfirmActions.hidden = false;
-        if (!appPopup.open) appPopup.showModal();
+        appPopup.showModal();
         return new Promise(resolve => { popupConfirmationResolver = resolve; });
     }
     function finishPopupConfirmation(confirmed) {
@@ -459,12 +492,20 @@
     }
     popupClose.addEventListener("click", () => {
         if (popupConfirmationResolver) finishPopupConfirmation(false);
-        else appPopup.close();
+        else {
+            appPopup.close();
+            appPopup.classList.remove("user-deleted-popup");
+        }
     });
     popupConfirm.addEventListener("click", () => finishPopupConfirmation(true));
     popupCancel.addEventListener("click", () => finishPopupConfirmation(false));
     appPopup.addEventListener("cancel", () => {
         if (popupConfirmationResolver) finishPopupConfirmation(false);
+        dismissUserDeletedAlert();
+    });
+    appPopup.addEventListener("click", event => event.stopPropagation());
+    appPopup.addEventListener("close", () => {
+        if (!appPopup.open) appPopup.classList.remove("user-deleted-popup");
     });
     popupContinue.addEventListener("click", () => {
         const contactId = pendingContactId;
@@ -579,10 +620,11 @@
     }
     async function saveMessage(m) { await dbPut("messages", m); }
     async function recordKeyChange(c) {
+        if (!keyChangeAlerts.checked) return;
         const notice = {
             id: crypto.randomUUID(),
             conversationId: c.id,
-            kind: "system",
+            kind: "key-change",
             text: `Se cambiaron las claves de cifrado de @${c.name}.`,
             timestamp: Date.now()
         };
@@ -603,7 +645,7 @@
         await saveContact(c);
         return changed;
     }
-    function requestContactLookup(c) {
+    function requestContactLookup(c, notifyIfDeleted = false) {
         if (socket?.readyState !== WebSocket.OPEN) return Promise.resolve(false);
         const requestId = crypto.randomUUID();
         return new Promise(resolve => {
@@ -611,7 +653,7 @@
                 pendingContactLookups.delete(requestId);
                 resolve(false);
             }, 8000);
-            pendingContactLookups.set(requestId, { contactId: c.id, timer, resolve });
+            pendingContactLookups.set(requestId, { contactId: c.id, timer, resolve, notifyIfDeleted });
             try {
                 socket.send(JSON.stringify({
                     type: "user.lookup",
@@ -693,7 +735,8 @@
             note.textContent = "No messages yet. Send a message to start the conversation.";
             messagesEl.append(note);
         } else c.messages.forEach(m => {
-            if (m.kind === "system") {
+            if (m.kind === "key-change" || m.kind === "system") {
+                if (!keyChangeAlerts.checked) return;
                 const card = document.createElement("div");
                 card.className = "system-card";
                 card.textContent = String(m.text || "");
@@ -777,6 +820,7 @@
 
     async function selectContact(id, continueWithoutUsername = false) {
         if (!continueWithoutUsername && requireUsername(id)) return;
+        dismissUserDeletedAlert();
         activeId = id;
         const c = contactMap.get(id);
         activeName.textContent = c.profile.displayName || c.name;
@@ -789,7 +833,7 @@
         updateChatSubtitle();
         updateComposerState();
         if (autoFocus.checked && window.matchMedia("(min-width: 701px)").matches) input.focus();
-        requestContactLookup(c);
+        requestContactLookup(c, true);
         await markConversationRead(id);
     }
 
@@ -924,7 +968,10 @@
             }, 30000);
             updateChatSubtitle();
             updateComposerState();
-            for (const contact of contactMap.values()) requestContactLookup(contact);
+            if (activeId) {
+                const activeContact = contactMap.get(activeId);
+                if (activeContact) requestContactLookup(activeContact, true);
+            }
             return;
         }
         if (data.type === "register.error") {
@@ -990,6 +1037,7 @@
         }
         if (data.type === "user.deleted") {
             const username = typeof data.username === "string" ? data.username : "";
+            const pendingLookup = pendingContactLookups.get(data.requestId);
             finishContactLookup(data.requestId, false);
             const contact = contactMap.get(username.toLowerCase());
             if (contact) {
@@ -1010,9 +1058,11 @@
                     if (activeId === stored.conversationId) renderMessages();
                 }
             }
-            showPopup("User deleted", username
-                ? `@${username} deleted their account. Messages cannot be sent to this username.`
-                : "This user deleted their account. Messages cannot be sent.");
+            if (accountStatusAlerts.checked && pendingLookup?.notifyIfDeleted && contact && activeId === contact.id) {
+                showPopup("User deleted", username
+                    ? `@${username} deleted their account. Messages cannot be sent to this username.`
+                    : "This user deleted their account. Messages cannot be sent.", false, "user-deleted-popup");
+            }
             return;
         }
         if (data.type === "update.profile.result") {
